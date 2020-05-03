@@ -29,7 +29,10 @@ struct parser {
     const unsigned char *data;          /* data being parsed/copied  */
     const unsigned char *data_end;      /* end of data buffer        */
 
-    const std::string get_string(){ std::string s((char *)data, (int) (data_end - data)); return s;  }
+    const std::string get_string() const { std::string s((char *)data, (int) (data_end - data)); return s;  }
+    bool is_not_null() const { return data == NULL; }
+    bool is_not_empty() const { return data < data_end; }
+    void set_empty() { data = data_end; }
 };
 
 /*

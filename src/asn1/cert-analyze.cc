@@ -253,7 +253,6 @@ struct pem_file_reader : public file_reader {
         return cert_len;
     }
     ~pem_file_reader() {
-        free(line);
         fclose(stream);
     }
 };
@@ -392,7 +391,7 @@ int main(int argc, char *argv[]) {
             struct x509_cert c;
             c.parse(cert_buf, cert_len);
 
-            if ((filter == NULL) || c.is_not_currently_valid() || c.is_weak()) {
+            if ((filter == NULL) || c.is_not_currently_valid() || c.is_weak() || c.is_nonconformant()) {
                 c.print_as_json(stdout);
             }
         }
