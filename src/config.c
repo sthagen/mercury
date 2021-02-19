@@ -12,6 +12,8 @@
 #include <thread>
 #include "config.h"
 
+struct global_variables global_vars;
+
 char *command_get_argument(const char *command, char *line) {
     if (strncmp(command, line, strlen(command)-1) == 0) {
         char *arg = line + strlen(command);
@@ -24,7 +26,7 @@ char *command_get_argument(const char *command, char *line) {
     return NULL;
 }
 
-enum status argument_parse_as_boolean(const char *arg, int *variable_to_set) {
+enum status argument_parse_as_boolean(const char *arg, bool *variable_to_set) {
     if (arg[0] == '1') {
         *variable_to_set = 1;
         return status_ok;
@@ -84,6 +86,10 @@ static enum status mercury_config_parse_line(struct mercury_config *cfg, char *l
         cfg->capture_interface = strdup(arg);
         return status_ok;
 
+    } else if ((arg = command_get_argument("resources=", line)) != NULL) {
+        cfg->resources = strdup(arg);
+        return status_ok;
+
     } else if ((arg = command_get_argument("directory=", line)) != NULL) {
         cfg->working_dir = strdup(arg);
         return status_ok;
@@ -120,6 +126,26 @@ static enum status mercury_config_parse_line(struct mercury_config *cfg, char *l
 
     } else if ((arg = command_get_argument("select=", line)) != NULL) {
         cfg->packet_filter_cfg = strdup(arg);
+        return status_ok;
+
+    } else if ((arg = command_get_argument("dns-json", line)) != NULL) {
+        global_vars.dns_json_output = true;
+        return status_ok;
+
+    } else if ((arg = command_get_argument("certs-json", line)) != NULL) {
+        global_vars.certs_json_output = true;
+        return status_ok;
+
+    } else if ((arg = command_get_argument("metadata", line)) != NULL) {
+        global_vars.metadata_output = true;
+        return status_ok;
+
+    } else if ((arg = command_get_argument("nonselected-tcp-data", line)) != NULL) {
+        global_vars.output_tcp_initial_data = true;
+        return status_ok;
+
+    } else if ((arg = command_get_argument("nonselected-udp-data", line)) != NULL) {
+        global_vars.output_udp_initial_data = true;
         return status_ok;
 
     } else {

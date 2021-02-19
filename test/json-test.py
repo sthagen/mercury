@@ -36,19 +36,38 @@ mercury_schema = {
         },
         'tls': {'type': 'object',
                 'properties': {
-                    'server_name': {'type': 'string'},
-                    'server_certs': {'type': 'array',
+                    'client': {
+                        'type': 'object',
+                        'properties': {
+                            'server_name': {'type': 'string'}
+                        }
+                    },
+                    'server': {
+                        'properties': {
+                            'certs': {'type': 'array',
                                      'items': {
-                                         'type': 'string'
-                                     }},
+                                         'type': 'object',
+                                         'properties': {
+                                             'base64': { 'type': 'string'},
+                                             'cert': { ' type': 'object' }
+                                         }
+                                     }
+                            }
+                        }
+                    }
                 },
                 "additionalProperties": False
             },
         'http': {'type': 'object',
                  'properties': {
-                     'host':            {'type': 'string'},
-                     'user_agent':      {'type': 'string'},
-                     'x-forwarded-for': {'type': 'string'}
+                     'request': {
+                         'type': 'object',
+                         'properties': {
+                             'host':            {'type': 'string'},
+                             'user_agent':      {'type': 'string'},
+                             'x-forwarded-for': {'type': 'string'}
+                             }
+                         }
                  },
                  "additionalProperties": False
              },
@@ -77,6 +96,25 @@ mercury_schema = {
                          'score':     {'type': 'number'},
                          'malware':   {'type': 'number'},
                          'p_malware': {'type': 'number'},
+                     },
+                     "additionalProperties": False
+             },
+        'dns': {'type': 'object',
+                     'properties': {
+                         'base64':   {'type': 'string'},
+                         'response': {'type': 'object'},
+                     },
+                     "additionalProperties": False
+             },
+        'tcp': {'type': 'object',
+                     'properties': {
+                         'data':   {'type': 'string'},
+                     },
+                     "additionalProperties": False
+             },
+        'udp': {'type': 'object',
+                     'properties': {
+                         'data':   {'type': 'string'},
                      },
                      "additionalProperties": False
              }

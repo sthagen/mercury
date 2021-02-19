@@ -35,10 +35,11 @@ if os.name == 'nt':
         imp_date_ext_data = json.loads(line)
         break
 else:
-    for line in os.popen('zcat %s' % (imp_date_cs_file)):
+    cmd = 'gzcat' if sys.platform == 'darwin' else 'zcat'
+    for line in os.popen(cmd + ' %s' % (imp_date_cs_file)):
         imp_date_cs_data = json.loads(line)
         break
-    for line in os.popen('zcat %s' % (imp_date_ext_file)):
+    for line in os.popen(cmd + ' %s' % (imp_date_ext_file)):
         imp_date_ext_data = json.loads(line)
         break
 
@@ -187,7 +188,7 @@ def degrease_ext_data(data, offset, ext_type, ext_length, ext_value):
             else:
                 degreased_ext_value += data[offset+i:offset+i+2]
         return degreased_ext_value
-    elif ext_type == b'002b': # supported_versions
+    elif ext_type == '002b': # supported_versions
         degreased_ext_value += data[offset:offset+1]
         for i in range(1,ext_length,2):
             if len(data) >= offset+i+1 and data[offset+i] in grease_single_int_ and data[offset+i] == data[offset+i+1]:
@@ -359,13 +360,13 @@ def get_tls_params(fp_):
 
 def get_sequence(fp_):
     seq = []
-    cs_ = fp_[1][0]
+    cs_ = fp_[1]
     for i in range(0,len(cs_),4):
         seq.append(cs_[i:i+4])
     ext_ = []
     if len(fp_) > 2 and fp_[2] != ['']:
         for t_ext_ in fp_[2]:
-            seq.append('ext_' + t_ext_[0][0:4] + '::' + t_ext_[0][4:])
+            seq.append('ext_' + t_ext_[0:4] + '::' + t_ext_[4:])
     return seq
 
 

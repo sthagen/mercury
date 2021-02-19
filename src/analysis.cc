@@ -7,10 +7,6 @@
 
 
 #include <arpa/inet.h>
-#include "analysis.h"
-#include "ept.h"
-#include "utils.h"
-
 #include <pthread.h>
 #include <iostream>
 #include <fstream>
@@ -20,6 +16,10 @@
 #include <zlib.h>
 #include <vector>
 #include <algorithm>
+
+#include "analysis.h"
+#include "utils.h"
+#include "tls.h"
 
 #include "rapidjson/document.h"
 #include "rapidjson/stringbuffer.h"
@@ -41,10 +41,8 @@ std::unordered_map<uint16_t, std::string> port_mapping = {{443, "https"},  {448,
                                                           {9000,"tor"},    {9001,"tor"},     {9002,"tor"},
                                                           {9101,"tor"}};
 
-enum analysis_cfg analysis_cfg = analysis_off;
 bool MALWARE_DB = true;
 bool EXTENDED_FP_METADATA = true;
-
 
 
 int gzgetline(gzFile f, std::vector<char>& v) {
@@ -73,6 +71,9 @@ int database_init(const char *resource_file) {
     rapidjson::Document::AllocatorType& allocator = fp_db.GetAllocator();
 
     gzFile in_file = gzopen(resource_file, "r");
+    if (in_file == NULL) {
+        return -1;
+    }
     std::vector<char> line;
     while (gzgetline(in_file, line)) {
         std::string line_str(line.begin(), line.end());
@@ -101,23 +102,11 @@ void database_finalize() {
 }
 
 
-void cache_finalize() {
-    return;
-    /*
-    for (std::pair<std::string, char*> element : fp_cache) {
-        free(element.second);
-    }
-    fp_cache.clear();
-    */
-}
-
-
 #ifndef DEFAULT_RESOURCE_DIR
-#define DEFAULT_RESOURCE_DIR "/usr/local/var/mercury"
+#define DEFAULT_RESOURCE_DIR "/usr/local/share/mercury"
 #endif
 
-int analysis_init() {
-    analysis_cfg = analysis_on;
+int analysis_init(int verbosity, const char *resource_dir) {
 
 //    if (pthread_mutex_init(&lock_fp_cache, NULL) != 0) {
 //       printf("\n mutex init has failed\n");
@@ -132,6 +121,11 @@ int analysis_init() {
        "../resources",
        NULL
       };
+    if (resource_dir) {
+        resource_dir_list[0] = resource_dir;  // use directory from configuration
+        resource_dir_list[1] = NULL;          // fail otherwise
+    }
+
     char resource_file_name[PATH_MAX];
 
     unsigned int index = 0;
@@ -145,18 +139,25 @@ int analysis_init() {
             strncat(resource_file_name, "/fingerprint_db.json.gz", PATH_MAX-1);
             retcode = database_init(resource_file_name);
             if (retcode == 0) {
+                if (verbosity > 0) {
+                    fprintf(stderr, "initialized analysis module with resource directory %s\n", resource_dir_list[index]);
+                }
                 return 0;
             }
+        }
+        if (verbosity > 0) {
+            fprintf(stderr, "warning: could not open file '%s'\n", resource_file_name);
+            fprintf(stderr, "warning: could not initialize analysis module with resource directory '%s', trying next in list\n", resource_dir_list[index]);
         }
 
         index++;  /* try next directory in the list */
     }
+    fprintf(stderr, "warning: could not initialize analysis module\n");
     return -1;
 }
 
 
 int analysis_finalize() {
-    analysis_cfg = analysis_off;
 
     addr_finalize();
     database_finalize();
@@ -198,6 +199,32 @@ uint16_t flow_key_get_dst_port(const struct flow_key *key) {
     return 0;
 }
 
+
+void flow_key_sprintf_dst_addr(const struct key &key,
+                               char *dst_addr_str) {
+
+    if (key.ip_vers == 4) {
+        uint8_t *d = (uint8_t *)&key.addr.ipv4.dst;
+        snprintf(dst_addr_str,
+                 MAX_DST_ADDR_LEN,
+                 "%u.%u.%u.%u",
+                 d[0], d[1], d[2], d[3]);
+    } else if (key.ip_vers == 6) {
+        uint8_t *d = (uint8_t *)&key.addr.ipv6.dst;
+        snprintf(dst_addr_str,
+                 MAX_DST_ADDR_LEN,
+                 "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+                 d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
+    } else {
+        dst_addr_str[0] = '\0'; // make sure that string is null-terminated
+    }
+}
+
+uint16_t flow_key_get_dst_port(const struct key &key) {
+    return ntohs(key.dst_port);
+}
+
+
 std::string get_port_app(uint16_t dst_port) {
     auto it = port_mapping.find(dst_port);
     if (it != port_mapping.end()) {
@@ -232,10 +259,18 @@ std::string get_domain_name(char* server_name) {
     return out_domain;
 }
 
+// #include <iostream> // for debugging
+// #include "rapidjson/writer.h"
+// print out fp_db for debugging
+// rapidjson::StringBuffer buffer;
+// rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+// fp_db.Accept(writer);
+// std::cerr << buffer.GetString() << std::endl;
 
 int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server_name, char *dst_ip, uint16_t dst_port) {
     rapidjson::Value::ConstMemberIterator matcher = fp_db.FindMember(fp_str);
     if (matcher == fp_db.MemberEnd()) {
+
         return -1;
     }
     rapidjson::Value& fp = fp_db[fp_str];
@@ -247,7 +282,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
     std::string server_name_str(server_name);
     std::string dst_ip_str(dst_ip);
 
-    uint32_t fp_tc, p_count, tmp_value;
+    uint64_t fp_tc, p_count, tmp_value;
     long double prob_process_given_fp, score;
     long double max_score = -1.0;
     long double sec_score = -1.0;
@@ -259,7 +294,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
     bool sec_mal = false;
 
     rapidjson::Value proc;
-    fp_tc = fp["total_count"].GetInt();
+    fp_tc = fp["total_count"].GetUint64();
 
     long double base_prior;
     long double proc_prior = log(.1);
@@ -267,7 +302,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
 
     const rapidjson::Value& procs = fp["process_info"];
     for (rapidjson::SizeType i = 0; i < procs.Size(); i++) {
-        p_count = procs[i]["count"].GetInt();
+        p_count = procs[i]["count"].GetUint64();
         prob_process_given_fp = (long double)p_count/fp_tc;
 
         base_prior = log(1.0/fp_tc);
@@ -281,7 +316,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
 
         itr = procs[i]["classes_ip_as"].FindMember(asn.c_str());
         if (itr != procs[i]["classes_ip_as"].MemberEnd()) {
-            tmp_value = procs[i]["classes_ip_as"][asn.c_str()].GetInt();
+            tmp_value = procs[i]["classes_ip_as"][asn.c_str()].GetUint64();
             score += log((long double)tmp_value/fp_tc)*0.13924;
         } else {
             score += base_prior*0.13924;
@@ -289,7 +324,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
 
         itr = procs[i]["classes_hostname_domains"].FindMember(domain.c_str());
         if (itr != procs[i]["classes_hostname_domains"].MemberEnd()) {
-            tmp_value = procs[i]["classes_hostname_domains"][domain.c_str()].GetInt();
+            tmp_value = procs[i]["classes_hostname_domains"][domain.c_str()].GetUint64();
             score += log((long double)tmp_value/fp_tc)*0.15590;
         } else {
             score += base_prior*0.15590;
@@ -297,7 +332,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
 
         itr = procs[i]["classes_port_applications"].FindMember(port_app.c_str());
         if (itr != procs[i]["classes_port_applications"].MemberEnd()) {
-            tmp_value = procs[i]["classes_port_applications"][port_app.c_str()].GetInt();
+            tmp_value = procs[i]["classes_port_applications"][port_app.c_str()].GetUint64();
             score += log((long double)tmp_value/fp_tc)*0.00528;
         } else {
             score += base_prior*0.00528;
@@ -306,7 +341,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
         if (EXTENDED_FP_METADATA) {
             itr = procs[i]["classes_ip_ip"].FindMember(dst_ip_str.c_str());
             if (itr != procs[i]["classes_ip_ip"].MemberEnd()) {
-                tmp_value = procs[i]["classes_ip_ip"][dst_ip_str.c_str()].GetInt();
+                tmp_value = procs[i]["classes_ip_ip"][dst_ip_str.c_str()].GetUint64();
                 score += log((long double)tmp_value/fp_tc)*0.56735;
             } else {
                 score += base_prior*0.56735;
@@ -314,7 +349,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
 
             itr = procs[i]["classes_hostname_sni"].FindMember(server_name_str.c_str());
             if (itr != procs[i]["classes_hostname_sni"].MemberEnd()) {
-                tmp_value = procs[i]["classes_hostname_sni"][server_name_str.c_str()].GetInt();
+                tmp_value = procs[i]["classes_hostname_sni"][server_name_str.c_str()].GetUint64();
                 score += log((long double)tmp_value/fp_tc)*0.96941;
             } else {
                 score += base_prior*0.96941;
@@ -350,7 +385,7 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
 
     }
 
-    if (MALWARE_DB && max_proc == "Generic DMZ Traffic" && sec_mal == false) {
+    if (MALWARE_DB && max_proc == "generic dmz process" && sec_mal == false) {
         max_proc = sec_proc;
         max_score = sec_score;
         max_mal = sec_mal;
@@ -373,118 +408,39 @@ int perform_analysis(char **result, size_t max_bytes, char *fp_str, char *server
     return 0;
 }
 
-
-void fprintf_analysis_from_extractor_and_flow_key(FILE *file,
-						  const struct extractor *x,
-						  const struct flow_key *key) {
+void write_analysis_from_extractor_and_flow_key(struct buffer_stream &buf,
+                                                const struct tls_client_hello &hello,
+                                                const struct key &key) {
     char* results;
 
-    if (analysis_cfg == analysis_off) {
-        return; // do not perform any analysis
+    int ret_value;
+    uint16_t dst_port = flow_key_get_dst_port(key);
+    char dst_ip_str[MAX_DST_ADDR_LEN];
+    flow_key_sprintf_dst_addr(key, dst_ip_str);
+
+    // copy fingerprint string
+    char fp_str[MAX_FP_STR_LEN] = { 0 };
+    struct buffer_stream fp_buf{fp_str, MAX_FP_STR_LEN};
+    hello.write_fingerprint(fp_buf);
+    fp_buf.write_char('\0'); // null-terminate
+    // fprintf(stderr, "fingerprint: '%s'\n", fp_str);
+
+    char sn_str[MAX_SNI_LEN] = { 0 };
+    struct datum sn{NULL, NULL};
+    hello.extensions.set_server_name(sn);
+    sn.strncpy(sn_str, MAX_SNI_LEN);
+    // fprintf(stderr, "server_name: '%.*s'\tcopy: '%s'\n", (int)sn.length(), sn.data, sn_str);
+
+    ret_value = perform_analysis(&results, MAX_FP_STR_LEN, fp_str, sn_str, dst_ip_str, dst_port);
+    if (ret_value == -1) {
+        return;
     }
+    // fprintf(stderr, "analysis: %s\n", results);
 
-    if (x->fingerprint_type == fingerprint_type_tls) {
-        int ret_value;
-        char dst_ip[MAX_DST_ADDR_LEN];
-        unsigned char fp_str[MAX_FP_STR_LEN];
-        char server_name[MAX_SNI_LEN];
-        uint16_t dst_port = flow_key_get_dst_port(key);
+    buf.write_char(',');
+    buf.strncpy(results);
 
-        uint8_t *extractor_buffer = x->output_start;
-        size_t bytes_extracted = extractor_get_output_length(x);
-        sprintf_binary_ept_as_paren_ept(extractor_buffer, bytes_extracted, fp_str, MAX_FP_STR_LEN); // should check return result
-        flow_key_sprintf_dst_addr(key, dst_ip);
-        if (x->packet_data.type == packet_data_type_tls_sni) {
-            size_t sni_len = x->packet_data.length - SNI_HEADER_LEN;
-            sni_len = sni_len > MAX_SNI_LEN-1 ? MAX_SNI_LEN-1 : sni_len;
-            memcpy(server_name, x->packet_data.value + SNI_HEADER_LEN, sni_len);
-            server_name[sni_len] = 0; // null termination
-        }
+    free(results);
 
-        ret_value = perform_analysis(&results, MAX_FP_STR_LEN, (char *)fp_str, server_name, dst_ip, dst_port);
-        if (ret_value == -1) {
-            return;
-        }
-        fprintf(file, "%s,", results);
-        free(results);
-
-        /*
-        std::stringstream fp_cache_key_;
-        fp_cache_key_ << std::string((char*)fp_str) << std::string(server_name) << std::string(dst_ip) << std::to_string(dst_port);
-        std::string fp_cache_key = fp_cache_key_.str();
-
-        pthread_mutex_lock(&lock_fp_cache);
-        auto it = fp_cache.find(fp_cache_key);
-        pthread_mutex_unlock(&lock_fp_cache);
-        if (it != fp_cache.end()) {
-            results = it->second;
-            fprintf(file, "%s,", results);
-        } else {
-            ret_value = perform_analysis(&results, MAX_FP_STR_LEN, (char *)fp_str, server_name, dst_ip, dst_port);
-            if (ret_value == -1) {
-                return;
-            }
-            fprintf(file, "%s,", results);
-
-            pthread_mutex_lock(&lock_fp_cache);
-            auto it = fp_cache.find(fp_cache_key);
-            if (it == fp_cache.end()) {
-                fp_cache.emplace(fp_cache_key, results);
-            } else {
-                free(results);
-                results = it->second;
-            }
-            pthread_mutex_unlock(&lock_fp_cache);
-        }
-        */
-    }
 }
 
-
-int append_analysis_from_extractor_and_flow_key(char *dstr, int *doff, int dlen, int *trunc,
-                                                const struct extractor *x,
-                                                const struct flow_key *key) {
-    char* results;
-
-    if (analysis_cfg == analysis_off) {
-        return 0; // do not perform any analysis
-    }
-
-    int r = 0;
-
-    if (x->fingerprint_type == fingerprint_type_tls) {
-        int ret_value;
-        char dst_ip[MAX_DST_ADDR_LEN];
-        unsigned char fp_str[MAX_FP_STR_LEN];
-        char server_name[MAX_SNI_LEN];
-        uint16_t dst_port = flow_key_get_dst_port(key);
-
-        uint8_t *extractor_buffer = x->output_start;
-        size_t bytes_extracted = extractor_get_output_length(x);
-        sprintf_binary_ept_as_paren_ept(extractor_buffer, bytes_extracted, fp_str, MAX_FP_STR_LEN); // should check return result
-        flow_key_sprintf_dst_addr(key, dst_ip);
-        if (x->packet_data.type == packet_data_type_tls_sni) {
-            size_t sni_len = x->packet_data.length - SNI_HEADER_LEN;
-            sni_len = sni_len > MAX_SNI_LEN-1 ? MAX_SNI_LEN-1 : sni_len;
-            memcpy(server_name, x->packet_data.value + SNI_HEADER_LEN, sni_len);
-            server_name[sni_len] = 0; // null termination
-        }
-
-        ret_value = perform_analysis(&results, MAX_FP_STR_LEN, (char *)fp_str, server_name, dst_ip, dst_port);
-        if (ret_value == -1) {
-            return r;
-        }
-        //fprintf(file, "%s,", results);
-
-        r += append_strncpy(dstr, doff, dlen, trunc,
-                            results);
-        r += append_putc(dstr, doff, dlen, trunc,
-                          ',');
-
-        free(results);
-
-
-    }
-
-    return r;
-}

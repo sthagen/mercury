@@ -11,10 +11,32 @@
  * \brief Protocol identification (header)
  */
 
-#ifndef JOY_PROTO_IDENTIFY_H
-#define JOY_PROTO_IDENTIFY_H
+#ifndef PROTO_IDENTIFY_H
+#define PROTO_IDENTIFY_H
 
 #include <stdint.h>
+
+enum tcp_msg_type {
+    tcp_msg_type_unknown = 0,
+    tcp_msg_type_http_request,
+    tcp_msg_type_http_response,
+    tcp_msg_type_tls_client_hello,
+    tcp_msg_type_tls_server_hello,
+    tcp_msg_type_tls_certificate,
+    tcp_msg_type_ssh,
+    tcp_msg_type_ssh_kex
+};
+
+enum udp_msg_type {
+    udp_msg_type_unknown = 0,
+    udp_msg_type_dns,
+    udp_msg_type_dhcp,
+    udp_msg_type_dtls_client_hello,
+    udp_msg_type_dtls_server_hello,
+    udp_msg_type_dtls_certificate,
+    udp_msg_type_wireguard,
+    udp_msg_type_quic
+};
 
 /* Values indicating direction of the flow */
 #define DIR_UNKNOWN 0
@@ -27,9 +49,13 @@
 #define HTTP_PORT         80
 #define HTTPS_PORT       443
 #define SSH_PORT          22
+#define SSH_KEX           23
 #define DHCP_CLIENT_PORT  67
 #define DHCP_SERVER_PORT  68
 #define DTLS_PORT         99
+#define DNS_PORT          53
+#define WIREGUARD_PORT 51820
+#define QUIC_PORT       4433
 
 /**
  * \brief Protocol Inference container
@@ -48,4 +74,4 @@ const struct pi_container *proto_identify_tcp(const uint8_t *tcp_data,
 const struct pi_container *proto_identify_udp(const uint8_t *udp_data,
                                               unsigned int len);
 
-#endif /* JOY_PROTO_IDENTIFY_H */
+#endif /* PROTO_IDENTIFY_H */
