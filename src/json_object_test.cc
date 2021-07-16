@@ -1,10 +1,21 @@
+/*
+ * json_object_test.cc
+ *
+ * test driver for json output code
+ *
+ * Copyright (c) 2021 Cisco Systems, Inc.  All rights reserved.  License at
+ * https://github.com/cisco/mercury/blob/master/LICENSE
+ */
+
 #include <stdio.h>
 
-#include "json_object.h"
+#define USE_JSON_FILE_OBJECT 1
+
+#include "libmerc/json_object.h"
 
 int main() {
 
-#if 0
+#ifdef USE_JSON_FILE_OBJECT
     // write an example mercury JSON output to stdout
     //
     struct json_file_object record{stdout};
@@ -22,7 +33,8 @@ int main() {
     record.close();
 
     fprintf(stdout, "\n"); // one object per line
-#endif // 0
+
+#endif // USE_JSON_FILE_OBJECT
 
     // write an example mercury JSON output to a buffer
     //

@@ -28,6 +28,7 @@ ifneq ($(wildcard src/Makefile), src/Makefile)
 	@echo $(COLOR_RED) "error: run ./configure before running make (src/Makefile is missing)" $(COLOR_OFF)
 else
 	cd src && $(MAKE) install
+	$(INSTALLDATA) mercury /usr/share/bash-completion/completions/ # note: completion script has same name as binary
 endif
 
 .PHONY: install-resources
@@ -99,8 +100,19 @@ else
 	systemctl stop mercury
 	systemctl disable mercury
 	rm /etc/systemd/system/mercury.service
+	userdel mercury
 endif
 
+# the target libs builds three versions of libmerc.so, and copies them
+# to the folder libs/
+.PHONY: libs
+libs:
+	$(MAKE) --directory=src clean
+	$(MAKE) --directory=src stripped-libmerc
+	$(MAKE) --directory=src clean
+	$(MAKE) --directory=src debug-libmerc
+	$(MAKE) --directory=src clean
+	$(MAKE) --directory=src unstripped-libmerc
 
 .PHONY: test
 test:
@@ -128,6 +140,7 @@ endif
 .PHONY: distclean
 distclean: clean
 	rm -rf autom4te.cache config.log config.status
+	rm -f lib/*.so
 ifneq ($(wildcard src/Makefile), src/Makefile)
 	@echo $(COLOR_RED) "error: run ./configure before running make (src/Makefile is missing)" $(COLOR_OFF)
 	@/bin/false

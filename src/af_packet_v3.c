@@ -33,10 +33,10 @@
 
 #include "af_packet_v3.h"
 #include "signal_handling.h"
-#include "utils.h"
+#include "libmerc/utils.h"
 #include "rnd_pkt_drop.h"
 #include "output.h"
-#include "pkt_proc.h"
+#include "pkt_processing.h"
 
 /*
  * The thread_storage, stats_tracking, and ring_limits structs are
@@ -769,7 +769,8 @@ void *packet_capture_thread_func(void *arg)  {
 }
 
 enum status bind_and_dispatch(struct mercury_config *cfg,
-			      struct output_file *out_ctx) {
+                              mercury_context mc,
+                              struct output_file *out_ctx) {
   /* initialize the ring limits from the configuration */
   struct ring_limits rl;
   ring_limits_init(&rl, cfg->buffer_fraction);
@@ -919,7 +920,7 @@ enum status bind_and_dispatch(struct mercury_config *cfg,
    */
   for (int thread = 0; thread < num_threads; thread++) {
 
-      tstor[thread].pkt_processor = pkt_proc_new_from_config(cfg, thread, &out_ctx->qs.queue[thread]);
+      tstor[thread].pkt_processor = pkt_proc_new_from_config(cfg, mc, thread, &out_ctx->qs.queue[thread]);
       if (tstor[thread].pkt_processor == NULL) {
           printf("error: could not initialize frame handler\n");
           return status_err;

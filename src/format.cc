@@ -3,13 +3,16 @@
 // translates between and analyzes data formats
 //
 // g++ -Wall -O3 format.cc -o format
+//
+// Copyright (c) 2021 Cisco Systems, Inc.  All rights reserved.  License at
+// https://github.com/cisco/mercury/blob/master/LICENSE
 
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdint.h>
 
-#include "json_object.h"
+#include "libmerc/json_object.h"
 
 size_t hex_to_raw(const void *output,
                   size_t output_buf_len,
@@ -153,7 +156,7 @@ public:
 
         }
 
-    void write_json(struct json_object &o) {
+    void write_json(struct json_object &) {
     }
 };
 
@@ -200,7 +203,6 @@ public:
 
     void operator()(struct buffer_stream &b) {
 
-        b.write_char('"');
         for (size_t i=0; i<length; i++) {
             uint8_t outchar = data[i];
             if (isprint(outchar)) {
@@ -219,7 +221,6 @@ public:
                 b.write_char('.');
             }
         }
-        b.write_char('"');
     }
 
 private:
@@ -227,7 +228,7 @@ private:
     size_t length;
 };
 
-int main(int argc, char *argv[]) {
+int main(int , char *[]) {
     size_t len = 0;
     char *line = NULL;
 

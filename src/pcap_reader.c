@@ -1,25 +1,29 @@
 /*
  * pcap_reader.c
+ *
+ * Copyright (c) 2019 Cisco Systems, Inc. All rights reserved.  License at
+ * https://github.com/cisco/mercury/blob/master/LICENSE
  */
 
 #include <errno.h>
 #include "pcap_reader.h"
 #include "output.h"
-#include "pkt_proc.h"
-#include "utils.h"
+#include "pkt_processing.h"
+#include "libmerc/utils.h"
 
 #define BILLION 1000000000L
 
 enum status pcap_reader_thread_context_init_from_config(struct pcap_reader_thread_context *tc,
                                                         struct mercury_config *cfg,
+                                                        mercury_context mc,
                                                         int tnum,
                                                         struct ll_queue *llq) {
-    char input_filename[MAX_FILENAME];
+    char input_filename[FILENAME_MAX];
     tc->tnum = tnum;
 	tc->loop_count = cfg->loop_count;
     enum status status;
 
-    tc->pkt_processor = pkt_proc_new_from_config(cfg, tnum, llq);
+    tc->pkt_processor = pkt_proc_new_from_config(cfg, mc, tnum, llq);
     if (tc->pkt_processor == NULL) {
         printf("error: could not initialize frame handler\n");
         return status_err;
@@ -58,7 +62,7 @@ void *pcap_file_processing_thread_func(void *userdata) {
     return NULL;
 }
 
-enum status open_and_dispatch(struct mercury_config *cfg, struct output_file *of) {
+enum status open_and_dispatch(struct mercury_config *cfg, mercury_context mc, struct output_file *of) {
     enum status status;
     struct timer t;
 	u_int64_t nano_seconds = 0;
@@ -69,7 +73,7 @@ enum status open_and_dispatch(struct mercury_config *cfg, struct output_file *of
 
     struct pcap_reader_thread_context tc;
 
-    status = pcap_reader_thread_context_init_from_config(&tc, cfg, 0, &of->qs.queue[0]);
+    status = pcap_reader_thread_context_init_from_config(&tc, cfg, mc, 0, &of->qs.queue[0]);
     if (status != status_ok) {
         if (errno) {
             perror("could not initialize pcap reader thread context");

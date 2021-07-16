@@ -9,6 +9,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
 #include <getopt.h>
@@ -19,20 +20,11 @@
 #include "pcap_file_io.h"
 #include "af_packet_v3.h"
 #include "pcap_reader.h"
-#include "analysis.h"
 #include "signal_handling.h"
 #include "config.h"
 #include "output.h"
-#include "license.h"
-#include "version.h"
 #include "rnd_pkt_drop.h"
-
-#ifndef  MERCURY_SEMANTIC_VERSION
-#warning MERCURY_SEMANTIC_VERSION is not defined
-#define  MERCURY_SEMANTIC_VERSION 0,0,0
-#endif
-
-struct semantic_version mercury_version(MERCURY_SEMANTIC_VERSION);
+#include "control.h"
 
 char mercury_help[] =
     "%s [INPUT] [OUTPUT] [OPTIONS]:\n"
@@ -52,7 +44,10 @@ char mercury_help[] =
     "GENERAL OPTIONS\n"
     "   --config c                            # read configuration from file c\n"
     "   [-a or --analysis]                    # analyze fingerprints\n"
-    "   --resources d                         # use resource directory d\n"
+    "   --resources=f                         # use resource file f\n"
+    "   --stats=f                             # write stats to file f\n"
+    "   --stats-time=T                        # write stats every T seconds\n"
+    "   --stats-limit=L                       # limit stats to L entries\n"
     "   [-s or --select] filter               # select traffic by filter (see --help)\n"
     "   --nonselected-tcp-data                # tcp data for nonselected traffic\n"
     "   --nonselected-udp-data                # udp data for nonselected traffic\n"
@@ -97,6 +92,7 @@ char mercury_extended_help[] =
     "      dns           DNS messages\n"
     "      tls           DTLS clientHello, serverHello, and certificates\n"
     "      http          HTTP request and response\n"
+    "      quic          QUIC handshake\n"
     "      ssh           SSH handshake and KEX\n"
     "      tcp           TCP headers\n"
     "      tcp.message   TCP initial message\n"
@@ -173,7 +169,7 @@ enum extended_help {
     extended_help_on  = 1
 };
 
-void usage(const char *progname, const char *err_string, enum extended_help extended_help) {
+[[noreturn]] void usage(const char *progname, const char *err_string, enum extended_help extended_help) {
     if (err_string) {
         printf("error: %s\n", err_string);
     }
@@ -194,17 +190,19 @@ bool option_is_valid(const char *opt) {
     return true;
 }
 
-extern struct global_variables global_vars;  /* defined in config.c */
-
 int main(int argc, char *argv[]) {
     struct mercury_config cfg = mercury_config_init();
+    struct libmerc_config libmerc_cfg;
+
+    extern double malware_prob_threshold;  // TODO - expose hidden command
 
     while(1) {
-        enum opt { config=1, version=2, license=3, dns_json=4, certs_json=5, metadata=6, resources=7, tcp_init_data=8, udp_init_data=9 };
+        enum opt { config=1, version=2, license=3, dns_json=4, certs_json=5, metadata=6, resources=7, tcp_init_data=8, udp_init_data=9, write_stats=10, stats_limit=11, stats_time=12 };
         int opt_idx = 0;
         static struct option long_opts[] = {
             { "config",      required_argument, NULL, config  },
             { "resources",   required_argument, NULL, resources },
+            { "stats",       required_argument, NULL, write_stats },
             { "version",     no_argument,       NULL, version },
             { "license",     no_argument,       NULL, license },
             { "dns-json",    no_argument,       NULL, dns_json },
@@ -212,6 +210,8 @@ int main(int argc, char *argv[]) {
             { "metadata",    no_argument,       NULL, metadata },
             { "nonselected-tcp-data", no_argument, NULL, tcp_init_data },
             { "nonselected-udp-data", no_argument, NULL, udp_init_data },
+            { "stats-limit", required_argument, NULL, stats_limit },
+            { "stats-time",  required_argument, NULL, stats_time },
             { "read",        required_argument, NULL, 'r' },
             { "write",       required_argument, NULL, 'w' },
             { "directory",   required_argument, NULL, 'd' },
@@ -219,6 +219,7 @@ int main(int argc, char *argv[]) {
             { "fingerprint", required_argument, NULL, 'f' },
             { "analysis",    no_argument,       NULL, 'a' },
             { "threads",     required_argument, NULL, 't' },
+            { "threshold",   required_argument, NULL, 'x' },  // TODO - expose hidden command
             { "buffer",      required_argument, NULL, 'b' },
             { "limit",       required_argument, NULL, 'l' },
             { "user",        required_argument, NULL, 'u' },
@@ -234,59 +235,67 @@ int main(int argc, char *argv[]) {
         switch(c) {
         case config:
             if (option_is_valid(optarg)) {
-                mercury_config_read_from_file(&cfg, optarg);
+                mercury_config_read_from_file(cfg, libmerc_cfg, optarg);
             } else {
                 usage(argv[0], "option config requires filename argument", extended_help_off);
             }
             break;
         case resources:
             if (option_is_valid(optarg)) {
-                cfg.resources = optarg;
+                libmerc_cfg.resources = optarg;
             } else {
                 usage(argv[0], "option resources requires directory argument", extended_help_off);
             }
             break;
+        case write_stats:
+            if (option_is_valid(optarg)) {
+                cfg.stats_filename = optarg;
+                libmerc_cfg.do_stats = true;
+            } else {
+                usage(argv[0], "option stats requires filename argument", extended_help_off);
+            }
+            break;
         case version:
-            mercury_version.print(stdout);
+            mercury_print_version_string(stdout);
             return EXIT_SUCCESS;
             break;
         case license:
-            printf("%s\n", license_string);
+            printf("%s\n", mercury_get_license_string());
             return EXIT_SUCCESS;
             break;
         case dns_json:
             if (optarg) {
                 usage(argv[0], "option dns-json does not use an argument", extended_help_off);
             } else {
-                global_vars.dns_json_output = true;
+                libmerc_cfg.dns_json_output = true;
             }
             break;
         case certs_json:
             if (optarg) {
                 usage(argv[0], "option certs-json does not use an argument", extended_help_off);
             } else {
-                global_vars.certs_json_output = true;
+                libmerc_cfg.certs_json_output = true;
             }
             break;
         case metadata:
             if (optarg) {
                 usage(argv[0], "option metadata does not use an argument", extended_help_off);
             } else {
-                global_vars.metadata_output = true;
+                libmerc_cfg.metadata_output = true;
             }
             break;
         case tcp_init_data:
             if (optarg) {
                 usage(argv[0], "option nonselected-tcp-data does not use an argument", extended_help_off);
             } else {
-                global_vars.output_tcp_initial_data = true;
+                libmerc_cfg.output_tcp_initial_data = true;
             }
             break;
         case udp_init_data:
             if (optarg) {
                 usage(argv[0], "option nonselected-udp-data does not use an argument", extended_help_off);
             } else {
-                global_vars.output_udp_initial_data = true;
+                libmerc_cfg.output_udp_initial_data = true;
             }
             break;
         case 'r':
@@ -328,7 +337,7 @@ int main(int argc, char *argv[]) {
             if (optarg) {
                 usage(argv[0], "option a or analysis does not use an argument", extended_help_off);
             } else {
-                cfg.analysis = true;
+                libmerc_cfg.do_analysis = true;
             }
             break;
         case 'o':
@@ -347,16 +356,17 @@ int main(int argc, char *argv[]) {
             break;
         case 's':
             if (optarg) {
-                if (cfg.packet_filter_cfg != NULL) {
+                if (libmerc_cfg.packet_filter_cfg != NULL) {
                     usage(argv[0], "option s or select used more than once", extended_help_off);
                 }
                 if (option_is_valid(optarg)) {
-                    cfg.packet_filter_cfg = optarg;
+                    libmerc_cfg.packet_filter_cfg = optarg;
                 } else {
                     usage(argv[0], "option s or select has the form -s\"filter\" or --select=\"filter\"", extended_help_off);
                 }
+            } else {
+                libmerc_cfg.packet_filter_cfg = (char *)"all";
             }
-            cfg.filter = 1;
             break;
         case 'h':
             if (optarg) {
@@ -389,6 +399,18 @@ int main(int argc, char *argv[]) {
                 usage(argv[0], "option t or threads requires a numeric argument", extended_help_off);
             }
             break;
+        case 'x':
+            if (option_is_valid(optarg)) {
+                errno = 0;
+                malware_prob_threshold = strtod(optarg, NULL);
+                if (malware_prob_threshold < 0.0 || malware_prob_threshold > 1.0 || errno) {
+                    printf("error: could not convert argument \"%s\" to a non-negative number\n", optarg);
+                    usage(argv[0], "option x or threshold requires a numeric argument between 0.0 and 1.0", extended_help_off);
+                }
+            } else {
+                usage(argv[0], "option x or threshold requires a numeric argument greater than 0.0 and less than 1.0", extended_help_off);
+            }
+            break;
         case 'l':
             if (option_is_valid(optarg)) {
                 errno = 0;
@@ -398,6 +420,28 @@ int main(int argc, char *argv[]) {
                 }
             } else {
                 usage(argv[0], "option l or limit requires a numeric argument", extended_help_off);
+            }
+            break;
+        case stats_time:
+            if (option_is_valid(optarg)) {
+                errno = 0;
+                cfg.stats_rotation_duration = strtol(optarg, NULL, 10);
+                if (errno) {
+                    printf("%s: could not convert argument \"%s\" to a number\n", strerror(errno), optarg);
+                }
+            } else {
+                usage(argv[0], "option stats-time requires a numeric argument", extended_help_off);
+            }
+            break;
+        case stats_limit:
+            if (option_is_valid(optarg)) {
+                errno = 0;
+                libmerc_cfg.max_stats_entries = strtol(optarg, NULL, 10);
+                if (errno) {
+                    printf("%s: could not convert argument \"%s\" to a number\n", strerror(errno), optarg);
+                }
+            } else {
+                usage(argv[0], "option stats-limit requires a numeric argument", extended_help_off);
             }
             break;
         case 'p':
@@ -472,17 +516,22 @@ int main(int argc, char *argv[]) {
     if (cfg.fingerprint_filename && cfg.write_filename) {
         usage(argv[0], "both fingerprint [f] and write [w] specified on command line", extended_help_off);
     }
+    if (libmerc_cfg.max_stats_entries && cfg.stats_filename == NULL) {
+        usage(argv[0], "stats-limit set, but no stats file specified", extended_help_off);
+    }
+    if (cfg.stats_filename != NULL && !libmerc_cfg.do_analysis) {
+        usage(argv[0], "stats option requires --analysis", extended_help_off);
+    }
 
     if (cfg.read_filename) {
         cfg.output_block = true;      // use blocking output, so that no packets are lost in copying
     }
 
-    if (cfg.analysis) {
-        if (analysis_init(cfg.verbosity, cfg.resources) == -1) {
-            return EXIT_FAILURE;  /* analysis engine could not be initialized */
-        };
-        global_vars.do_analysis = true;
-    }
+    mercury_context mc = mercury_init(&libmerc_cfg, cfg.verbosity);
+    if (mc == nullptr) {
+        fprintf(stderr, "error: could not initialize mercury\n");
+        return EXIT_FAILURE;          // libmerc could not be initialized
+    };
 
     /*
      * loop_count < 1  ==> not valid
@@ -490,9 +539,9 @@ int main(int argc, char *argv[]) {
      * loop_count == 1 ==> default condition
      */
     if (cfg.loop_count < 1) {
-        usage(argv[0], "Invalid loop count, it should be >= 1", extended_help_off);
+        usage(argv[0], "error: invalid loop count (should be >= 1)", extended_help_off);
     } else if (cfg.loop_count > 1) {
-        printf("Loop count: %d\n", cfg.loop_count);
+        // fprintf(stderr, "notice: looping over input with loop count %d\n", cfg.loop_count);
     }
 
     /* The option --adaptive works only with -w PCAP file option and -c capture interface */
@@ -523,6 +572,11 @@ int main(int argc, char *argv[]) {
     /* init random number generator */
     srand(time(0));
 
+    controller *ctl = nullptr;
+    if (cfg.stats_filename) {
+        ctl = new controller{mc, cfg.stats_filename, cfg.stats_rotation_duration};
+    }
+
     pthread_t output_thread;
     struct output_file out_file;
     if (output_thread_init(output_thread, out_file, cfg) != 0) {
@@ -534,25 +588,28 @@ int main(int argc, char *argv[]) {
         if (cfg.verbosity) {
             fprintf(stderr, "initializing interface %s\n", cfg.capture_interface);
         }
-        if (bind_and_dispatch(&cfg, &out_file) != status_ok) {
+        if (bind_and_dispatch(&cfg, mc, &out_file) != status_ok) {
             fprintf(stderr, "error: bind and dispatch failed\n");
             return EXIT_FAILURE;
         }
     } else if (cfg.read_filename) {
 
-        if (open_and_dispatch(&cfg, &out_file) != status_ok) {
+        if (open_and_dispatch(&cfg, mc, &out_file) != status_ok) {
             return EXIT_FAILURE;
         }
     }
 
-    if (cfg.analysis) {
-        analysis_finalize();
+    if (ctl) {
+        delete ctl;  // delete control thread, which will flush stats output (if any)
     }
+
+    mercury_finalize(mc);
 
     if (cfg.verbosity) {
         fprintf(stderr, "stopping output thread and flushing queued output to disk.\n");
     }
     output_thread_finalize(output_thread, &out_file);
+
 
     return 0;
 }
